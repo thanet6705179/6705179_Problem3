@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from google import genai
 from google.genai import types
@@ -15,11 +16,11 @@ ROOM_CODE = os.environ.get("ROOM_CODE", "1234")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# หน่วยความจำเก็บคะแนนนักเรียนสำหรับอาจารย์ (In-Memory Database)
+# หน่วยความจำเก็บคะแนนและคำตอบนักเรียนสำหรับอาจารย์ (In-Memory Database)
 EXAM_RESULTS = []
 
 # ==========================================
-# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX)
+# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX & TEACHER DETAILS)
 # ==========================================
 
 PAGE_TEMPLATE = """
@@ -30,12 +31,11 @@ PAGE_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ระบบสอบแคลคูลัสออนไลน์ (Gemma AI)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- MathJax สำหรับแสดงสัญลักษณ์คณิตศาสตร์ -->
     <script>
         window.MathJax = {
-            tex: {
-                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']]
-            }
+            tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }
         };
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
@@ -53,25 +53,26 @@ PAGE_TEMPLATE = """
     <div class="row justify-content-center">
         <div class="col-md-5">
             <div class="card card-custom p-4 bg-white">
-                <h3 class="text-center mb-4 fw-bold text-primary">เข้าสู่ระบบสอบแคลคูลัส</h3>
+                <h3 class="text-center mb-1 fw-bold text-primary">เข้าสู่ห้องสอบ</h3>
+                <p class="text-center text-muted mb-4">ระบบตรวจข้อสอบคณิตศาสตร์เชิงอัตนัย (Gemma AI)</p>
                 {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
                 <form method="POST" action="/login">
                     <div class="mb-3">
-                        <label class="form-label">ชื่อ-นามสกุล / รหัสนักศึกษา</label>
+                        <label class="form-label fw-bold">ชื่อ-นามสกุล / รหัสนักศึกษา</label>
                         <input type="text" name="username" class="form-control" required placeholder="เช่น นายสมชาย ใจดี (6705179)">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">สถานะการเข้าใช้งาน</label>
+                        <label class="form-label fw-bold">สถานะการเข้าใช้งาน</label>
                         <select name="role" class="form-select" id="roleSelect">
                             <option value="student">นักเรียน / นักศึกษา</option>
                             <option value="teacher">อาจารย์ / ผู้ดูแลระบบ</option>
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">รหัสห้องสอบ (Room Code)</label>
+                        <label class="form-label fw-bold">รหัสห้องสอบ (Room Code)</label>
                         <input type="password" name="room_code" class="form-control" required placeholder="กรอกรหัสห้องสอบ 1234">
                     </div>
-                    <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">เข้าสู่ระบบ</button>
+                    <button type="submit" class="btn btn-primary w-100 py-2 fw-bold fs-5">เข้าสู่ระบบ</button>
                 </form>
             </div>
         </div>
@@ -81,7 +82,6 @@ PAGE_TEMPLATE = """
     <!-- 📝 หน้าทำข้อสอบนักเรียน -->
     <div class="row justify-content-center">
         <div class="col-md-8">
-            <!-- หน้านับถอยหลังเตรียมตัว -->
             <div id="prep-screen" class="card card-custom p-5 bg-white text-center">
                 <h3 class="fw-bold">เตรียมความพร้อมในการทำข้อสอบ</h3>
                 <p class="text-muted">ระบบกำลังใช้ Gemma AI สุ่มสร้างข้อสอบ 5 ข้อให้คุณ ข้อสอบจะเริ่มอัตโนมัติในอีก</p>
@@ -89,7 +89,6 @@ PAGE_TEMPLATE = """
                 <small class="text-secondary mt-3">กรุณาอย่าปิดหรือรีเฟรชหน้าจอนี้</small>
             </div>
 
-            <!-- หน้าทำข้อสอบ -->
             <div id="exam-screen" class="card card-custom p-4 bg-white d-none">
                 <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
                     <h4 class="fw-bold m-0">ข้อสอบวิชาแคลคูลัส (5 ข้อ)</h4>
@@ -101,7 +100,6 @@ PAGE_TEMPLATE = """
                 </form>
             </div>
 
-            <!-- หน้าแสดงผลคะแนน -->
             <div id="result-screen" class="card card-custom p-5 bg-white d-none text-center">
                 <h2 class="fw-bold text-success mb-3">ผลการสอบของคุณ</h2>
                 <div id="score-display" class="display-3 fw-bold text-primary mb-3">0 / 5</div>
@@ -119,13 +117,9 @@ PAGE_TEMPLATE = """
         fetch('/api/generate_exam', { method: 'POST' })
             .then(res => res.json())
             .then(data => {
-                if(data.success) {
-                    examData = data.questions;
-                } else {
-                    alert('เกิดข้อผิดพลาดในการสร้างข้อสอบ: ' + data.error);
-                }
-            })
-            .catch(err => console.error(err));
+                if(data.success) { examData = data.questions; }
+                else { alert('เกิดข้อผิดพลาดในการสร้างข้อสอบ: ' + data.error); }
+            }).catch(err => console.error(err));
 
         const countdownInterval = setInterval(() => {
             timeLeft--;
@@ -139,7 +133,6 @@ PAGE_TEMPLATE = """
         function showExam() {
             document.getElementById('prep-screen').classList.add('d-none');
             document.getElementById('exam-screen').classList.remove('d-none');
-            
             const container = document.getElementById('questions-container');
             container.innerHTML = '';
             
@@ -153,10 +146,7 @@ PAGE_TEMPLATE = """
                     </div>
                 `;
             });
-
-            if (window.MathJax) {
-                MathJax.typesetPromise();
-            }
+            if (window.MathJax) { MathJax.typesetPromise(); }
         }
 
         function submitExam() {
@@ -180,7 +170,6 @@ PAGE_TEMPLATE = """
             .then(data => {
                 document.getElementById('exam-screen').classList.add('d-none');
                 document.getElementById('result-screen').classList.remove('d-none');
-                
                 document.getElementById('score-display').innerText = `${data.score} / 5 ข้อ`;
                 
                 let feedbackHtml = '<h4>เฉลยและคำอธิบายจาก Gemma AI:</h4>';
@@ -195,10 +184,7 @@ PAGE_TEMPLATE = """
                     `;
                 });
                 document.getElementById('feedback-container').innerHTML = feedbackHtml;
-
-                if (window.MathJax) {
-                    MathJax.typesetPromise();
-                }
+                if (window.MathJax) { MathJax.typesetPromise(); }
             });
         }
     </script>
@@ -212,29 +198,54 @@ PAGE_TEMPLATE = """
                     <h3 class="fw-bold text-primary">ระบบจัดการและดูผลสอบ (สำหรับอาจารย์)</h3>
                     <a href="/logout" class="btn btn-outline-danger btn-sm">ออกจากระบบ</a>
                 </div>
-                <h5>ประวัติการส่งข้อสอบของนักเรียน</h5>
-                <table class="table table-hover mt-3">
-                    <thead class="table-light">
-                        <tr>
-                            <th>#</th>
-                            <th>ชื่อ-รหัสนักศึกษา</th>
-                            <th>คะแนนที่ได้</th>
-                            <th>เวลาที่ส่ง</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for res in results %}
-                        <tr>
-                            <td>{{ loop.index }}</td>
-                            <td>{{ res.username }}</td>
-                            <td><span class="badge bg-success fs-6">{{ res.score }} / 5</span></td>
-                            <td>{{ res.timestamp }}</td>
-                        </tr>
-                        {% else %}
-                        <tr><td colspan="4" class="text-center text-muted">ยังไม่มีข้อมูลการสอบในเซสชันนี้</td></tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                <h5 class="mb-3">ประวัติการส่งข้อสอบและคำตอบของนักเรียน</h5>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>ชื่อ-รหัสนักศึกษา</th>
+                                <th>คะแนน</th>
+                                <th>เวลาที่ส่ง</th>
+                                <th>รายละเอียดคำตอบ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for res in results %}
+                            <tr>
+                                <td>{{ loop.index }}</td>
+                                <td><b>{{ res.username }}</b></td>
+                                <td><span class="badge bg-success fs-6">{{ res.score }} / 5</span></td>
+                                <td>{{ res.timestamp }}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ loop.index }}">
+                                        🔍 ตรวจคำตอบนักเรียน
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr class="collapse" id="collapse-{{ loop.index }}">
+                                <td colspan="5" class="bg-light p-3">
+                                    <div class="card card-body">
+                                        <h6 class="fw-bold text-primary mb-3">คำตอบของ {{ res.username }}:</h6>
+                                        {% for detail in res.details %}
+                                        <div class="mb-2 pb-2 border-bottom">
+                                            <p class="m-0"><b>ข้อ {{ loop.index }}:</b> {{ detail.question }}</p>
+                                            <p class="m-0 text-secondary">คำตอบนักเรียน: <span class="badge bg-secondary">{{ detail.student_answer or 'ไม่ได้ตอบ' }}</span></p>
+                                            <p class="m-0 {{ 'text-success' if detail.is_correct else 'text-danger' }}">
+                                                <b>ผลตรวจ:</b> {{ 'ถูกต้อง (+1)' if detail.is_correct else 'ไม่ถูกต้อง (0)' }}
+                                            </p>
+                                            <small class="text-muted">{{ detail.explanation }}</small>
+                                        </div>
+                                        {% endfor %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted py-4">ยังไม่มีข้อมูลการส่งข้อสอบในเซสชันนี้</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
@@ -308,9 +319,7 @@ def generate_exam():
         response = client.models.generate_content(
             model='gemma-2-27b-it',
             contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         questions = json.loads(response.text)
         return jsonify({"success": True, "questions": questions})
@@ -337,23 +346,21 @@ def submit_exam():
         student_ans = item.get('student_answer', '').strip()
         correct_ans = exam_data[i].get('answer', '') if i < len(exam_data) else ""
         
-        # 1. เปรียบเทียบแบบตัดช่องว่าง (Whitespace Normalization)
+        # เปรียบเทียบแบบตัดช่องว่าง
         clean_student = student_ans.replace(" ", "").lower()
         clean_correct = correct_ans.replace(" ", "").lower()
         
         is_correct = (clean_student == clean_correct) or (clean_student in clean_correct and len(clean_student) > 0)
-
         explanation = f"เฉลยที่ถูกต้องคือ: {correct_ans}"
 
-        # 2. หากไม่ตรง ให้ Gemma AI ช่วยตรวจความถูกต้องทางคณิตศาสตร์
+        # ให้ Gemma AI ตรวจความเทียบเท่าทางคณิตศาสตร์
         if not is_correct and client and student_ans:
             try:
                 eval_prompt = f"""
                 โจทย์: {item.get('question')}
                 เฉลย: {correct_ans}
                 คำตอบของนักเรียน: {student_ans}
-                
-                คำตอบของนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่? (เช่น ต่างกันแค่ช่องว่าง)
+                คำตอบของนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่?
                 ตอบกลับเป็น JSON เท่านั้น: {{"is_correct": true/false, "explanation": "คำอธิบายภาษาไทย"}}
                 """
                 eval_resp = client.models.generate_content(
@@ -363,35 +370,3 @@ def submit_exam():
                 )
                 res_data = json.loads(eval_resp.text)
                 is_correct = res_data.get('is_correct', False)
-                if 'explanation' in res_data:
-                    explanation = res_data['explanation']
-            except Exception:
-                pass
-
-        if is_correct:
-            score += 1
-
-        details.append({
-            "question": item.get('question'),
-            "student_answer": student_ans,
-            "is_correct": is_correct,
-            "explanation": explanation
-        })
-
-    # บันทึกคะแนนเข้าตารางอาจารย์
-    from datetime import datetime
-    EXAM_RESULTS.append({
-        "username": session.get('username', 'ไม่ระบุชื่อ'),
-        "score": score,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-
-    return jsonify({"score": score, "details": details})
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
