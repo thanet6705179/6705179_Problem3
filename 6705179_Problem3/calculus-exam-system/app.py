@@ -20,7 +20,7 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 EXAM_RESULTS = []
 
 # ==========================================
-# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX & TEACHER DETAILS)
+# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX & TEACHER DASHBOARD)
 # ==========================================
 
 PAGE_TEMPLATE = """
@@ -323,7 +323,7 @@ def generate_exam():
         )
         questions = json.loads(response.text)
         return jsonify({"success": True, "questions": questions})
-    except Exception as e:
+    except Exception:
         fallback = [
             {"question": "จงหาอนุพันธ์ของ $f(x) = x^3 - 4x$", "answer": "3x^2 - 4"},
             {"question": "จงหาค่าของ $\\int (6x^2) dx$", "answer": "2x^3 + C"},
@@ -335,7 +335,7 @@ def generate_exam():
 
 @app.route('/api/submit_exam', methods=['POST'])
 def submit_exam():
-    data = request.json
+    data = request.json or {}
     answers = data.get('answers', [])
     exam_data = data.get('examData', [])
     
@@ -346,27 +346,53 @@ def submit_exam():
         student_ans = item.get('student_answer', '').strip()
         correct_ans = exam_data[i].get('answer', '') if i < len(exam_data) else ""
         
-        # เปรียบเทียบแบบตัดช่องว่าง
+        # 1. เปรียบเทียบแบบตัดช่องว่าง
         clean_student = student_ans.replace(" ", "").lower()
         clean_correct = correct_ans.replace(" ", "").lower()
         
         is_correct = (clean_student == clean_correct) or (clean_student in clean_correct and len(clean_student) > 0)
         explanation = f"เฉลยที่ถูกต้องคือ: {correct_ans}"
 
-        # ให้ Gemma AI ตรวจความเทียบเท่าทางคณิตศาสตร์
+        # 2. ให้ Gemma AI ช่วยตรวจความเทียบเท่าทางคณิตศาสตร์
         if not is_correct and client and student_ans:
             try:
-                eval_prompt = f"""
-                โจทย์: {item.get('question')}
-                เฉลย: {correct_ans}
-                คำตอบของนักเรียน: {student_ans}
-                คำตอบของนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่?
-                ตอบกลับเป็น JSON เท่านั้น: {{"is_correct": true/false, "explanation": "คำอธิบายภาษาไทย"}}
-                """
+                eval_prompt = f"โจทย์: {item.get('question')}\nเฉลย: {correct_ans}\nคำตอบนักเรียน: {student_ans}\nคำตอบนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่? ตอบเป็น JSON: {{\"is_correct\": true/false, \"explanation\": \"คำอธิบาย\"}}"
                 eval_resp = client.models.generate_content(
                     model='gemma-2-27b-it',
                     contents=eval_prompt,
                     config=types.GenerateContentConfig(response_mime_type="application/json")
                 )
                 res_data = json.loads(eval_resp.text)
-                is_correct = res_data.get('is_correct', False)
+                is_correct = bool(res_data.get('is_correct', False))
+                if 'explanation' in res_data:
+                    explanation = res_data['explanation']
+            except Exception:
+                pass
+
+        if is_correct:
+            score += 1
+
+        details.append({
+            "question": item.get('question'),
+            "student_answer": student_ans,
+            "is_correct": is_correct,
+            "explanation": explanation
+        })
+
+    # บันทึกคะแนนและคำตอบเข้าสู่กระดานอาจารย์
+    EXAM_RESULTS.append({
+        "username": session.get('username', 'ไม่ระบุชื่อ'),
+        "score": score,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "details": details
+    })
+
+    return jsonify({"score": score, "details": details})
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
