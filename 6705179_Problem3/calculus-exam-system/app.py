@@ -8,18 +8,18 @@ from google.genai import types
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "calculus-exam-secret-key-2026")
 
-# ค่า Room Code เริ่มต้น (ดึงจาก Env บน Render หรือใช้ 1234)
+# ค่า Room Code สำหรับเข้าใช้งาน (ค่าเริ่มต้นคือ 1234)
 ROOM_CODE = os.environ.get("ROOM_CODE", "1234")
 
 # ตั้งค่า Gemma AI Client
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# หน่วยความจำเก็บคะแนนนักเรียน (In-Memory Database)
+# หน่วยความจำเก็บคะแนนนักเรียนสำหรับอาจารย์ (In-Memory Database)
 EXAM_RESULTS = []
 
 # ==========================================
-# 📄 HTML/CSS/JS TEMPLATES (INLINE CONSOLIDATED)
+# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX)
 # ==========================================
 
 PAGE_TEMPLATE = """
@@ -30,6 +30,15 @@ PAGE_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ระบบสอบแคลคูลัสออนไลน์ (Gemma AI)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- MathJax สำหรับแสดงสัญลักษณ์คณิตศาสตร์ -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']]
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
     <style>
         body { background-color: #f4f7f6; font-family: 'Sarabun', sans-serif; }
         .card-custom { border-radius: 15px; border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
@@ -53,7 +62,7 @@ PAGE_TEMPLATE = """
                     </div>
                     <div class="mb-3">
                         <label class="form-label">สถานะการเข้าใช้งาน</label>
-                        <select name="role" class="form-select" id="roleSelect" onchange="toggleRoomCode()">
+                        <select name="role" class="form-select" id="roleSelect">
                             <option value="student">นักเรียน / นักศึกษา</option>
                             <option value="teacher">อาจารย์ / ผู้ดูแลระบบ</option>
                         </select>
@@ -104,12 +113,9 @@ PAGE_TEMPLATE = """
 
     <script>
         let examData = [];
-
-        // เริ่มนับถอยหลัง 15 วินาที
         let timeLeft = 15;
         const timerElement = document.getElementById('countdown');
         
-        // ดึงข้อสอบจาก Gemma AI ในระหว่างนับถอยหลัง
         fetch('/api/generate_exam', { method: 'POST' })
             .then(res => res.json())
             .then(data => {
@@ -147,6 +153,10 @@ PAGE_TEMPLATE = """
                     </div>
                 `;
             });
+
+            if (window.MathJax) {
+                MathJax.typesetPromise();
+            }
         }
 
         function submitExam() {
@@ -185,6 +195,10 @@ PAGE_TEMPLATE = """
                     `;
                 });
                 document.getElementById('feedback-container').innerHTML = feedbackHtml;
+
+                if (window.MathJax) {
+                    MathJax.typesetPromise();
+                }
             });
         }
     </script>
@@ -217,7 +231,7 @@ PAGE_TEMPLATE = """
                             <td>{{ res.timestamp }}</td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="4" class="text-center text-muted">ยังไม่มีข้อมูลการสอบ</td></tr>
+                        <tr><td colspan="4" class="text-center text-muted">ยังไม่มีข้อมูลการสอบในเซสชันนี้</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -270,11 +284,9 @@ def teacher_dashboard():
         return redirect(url_for('index'))
     return render_template_string(PAGE_TEMPLATE, page='teacher', results=EXAM_RESULTS)
 
-# API สุ่มสร้างข้อสอบ 5 ข้อด้วย Gemma 2 Model
 @app.route('/api/generate_exam', methods=['POST'])
 def generate_exam():
     if not client:
-        # หากยังไม่ได้ตั้ง GEMINI_API_KEY จะใช้ข้อสอบสำรองอัตโนมัติ (ไม่ค้าง)
         mock_questions = [
             {"question": "จงหาอนุพันธ์ของ $f(x) = 3x^2 + 5x - 2$", "answer": "6x + 5"},
             {"question": "จงหาค่าของ $\\int (4x^3 + 2x) dx$", "answer": "x^4 + x^2 + C"},
@@ -303,7 +315,6 @@ def generate_exam():
         questions = json.loads(response.text)
         return jsonify({"success": True, "questions": questions})
     except Exception as e:
-        # กรณี API ติดขัด จะส่งชุดข้อสอบมาตรฐานกลับไปทันที หน้าเว็บจะไม่ค้าง
         fallback = [
             {"question": "จงหาอนุพันธ์ของ $f(x) = x^3 - 4x$", "answer": "3x^2 - 4"},
             {"question": "จงหาค่าของ $\\int (6x^2) dx$", "answer": "2x^3 + C"},
@@ -313,7 +324,6 @@ def generate_exam():
         ]
         return jsonify({"success": True, "questions": fallback})
 
-# API ตรวจข้อสอบด้วย Gemma 2 Model
 @app.route('/api/submit_exam', methods=['POST'])
 def submit_exam():
     data = request.json
@@ -327,8 +337,37 @@ def submit_exam():
         student_ans = item.get('student_answer', '').strip()
         correct_ans = exam_data[i].get('answer', '') if i < len(exam_data) else ""
         
-        # เปรียบเทียบคำตอบเบื้องต้น หรือใช้ Gemma ตรวจ
-        is_correct = (student_ans.lower() == correct_ans.lower()) or (student_ans in correct_ans)
+        # 1. เปรียบเทียบแบบตัดช่องว่าง (Whitespace Normalization)
+        clean_student = student_ans.replace(" ", "").lower()
+        clean_correct = correct_ans.replace(" ", "").lower()
+        
+        is_correct = (clean_student == clean_correct) or (clean_student in clean_correct and len(clean_student) > 0)
+
+        explanation = f"เฉลยที่ถูกต้องคือ: {correct_ans}"
+
+        # 2. หากไม่ตรง ให้ Gemma AI ช่วยตรวจความถูกต้องทางคณิตศาสตร์
+        if not is_correct and client and student_ans:
+            try:
+                eval_prompt = f"""
+                โจทย์: {item.get('question')}
+                เฉลย: {correct_ans}
+                คำตอบของนักเรียน: {student_ans}
+                
+                คำตอบของนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่? (เช่น ต่างกันแค่ช่องว่าง)
+                ตอบกลับเป็น JSON เท่านั้น: {{"is_correct": true/false, "explanation": "คำอธิบายภาษาไทย"}}
+                """
+                eval_resp = client.models.generate_content(
+                    model='gemma-2-27b-it',
+                    contents=eval_prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                res_data = json.loads(eval_resp.text)
+                is_correct = res_data.get('is_correct', False)
+                if 'explanation' in res_data:
+                    explanation = res_data['explanation']
+            except Exception:
+                pass
+
         if is_correct:
             score += 1
 
@@ -336,10 +375,10 @@ def submit_exam():
             "question": item.get('question'),
             "student_answer": student_ans,
             "is_correct": is_correct,
-            "explanation": f"เฉลยที่ถูกต้องคือ: {correct_ans}"
+            "explanation": explanation
         })
 
-    # บันทึกผลสอบของนักเรียนลงในระบบอาจารย์
+    # บันทึกคะแนนเข้าตารางอาจารย์
     from datetime import datetime
     EXAM_RESULTS.append({
         "username": session.get('username', 'ไม่ระบุชื่อ'),
