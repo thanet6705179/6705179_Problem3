@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from google import genai
@@ -20,7 +19,7 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 EXAM_RESULTS = []
 
 # ==========================================
-# 📄 HTML/CSS/JS TEMPLATES (WITH MATHJAX & TEACHER DASHBOARD)
+# 📄 HTML/CSS/JS TEMPLATES
 # ==========================================
 
 PAGE_TEMPLATE = """
@@ -48,37 +47,37 @@ PAGE_TEMPLATE = """
 </head>
 <body>
 <div class="container py-5">
-    {% if page == 'login' %}
-    <!-- 🔑 หน้า LOGIN -->
+
+    {% if page == 'student_login' %}
+    <!-- 🎓 หน้า LOGIN สำหรับนักเรียน (/student) -->
     <div class="row justify-content-center">
         <div class="col-md-5">
             <div class="card card-custom p-4 bg-white">
-                <h3 class="text-center mb-1 fw-bold text-primary">เข้าสู่ห้องสอบ</h3>
-                <p class="text-center text-muted mb-4">ระบบตรวจข้อสอบคณิตศาสตร์เชิงอัตนัย (Gemma AI)</p>
+                <div class="text-center mb-3">
+                    <span class="badge bg-primary px-3 py-2 mb-2 fs-6">🎓 สำหรับนักเรียน</span>
+                    <h3 class="fw-bold text-primary">เข้าสู่ห้องสอบ</h3>
+                    <p class="text-muted">ระบบตรวจข้อสอบคณิตศาสตร์เชิงอัตนัย (Gemma AI)</p>
+                </div>
                 {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
-                <form method="POST" action="/login">
+                <form method="POST" action="/student">
                     <div class="mb-3">
                         <label class="form-label fw-bold">ชื่อ-นามสกุล / รหัสนักศึกษา</label>
                         <input type="text" name="username" class="form-control" required placeholder="เช่น นายสมชาย ใจดี (6705179)">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label fw-bold">สถานะการเข้าใช้งาน</label>
-                        <select name="role" class="form-select" id="roleSelect">
-                            <option value="student">นักเรียน / นักศึกษา</option>
-                            <option value="teacher">อาจารย์ / ผู้ดูแลระบบ</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">รหัสห้องสอบ (Room Code)</label>
+                        <label class="form-label fw-bold">รหัสเข้าห้องสอบ (Room Code)</label>
                         <input type="password" name="room_code" class="form-control" required placeholder="กรอกรหัสห้องสอบ 1234">
                     </div>
-                    <button type="submit" class="btn btn-primary w-100 py-2 fw-bold fs-5">เข้าสู่ระบบ</button>
+                    <button type="submit" class="btn btn-primary w-100 py-2 fw-bold fs-5">เข้าสู่ห้องสอบ</button>
                 </form>
+                <div class="text-center mt-3 border-top pt-3">
+                    <small class="text-muted">อาจารย์เช็กคะแนนและคำตอบ? <a href="/teacher" class="fw-bold text-decoration-none">เข้าสู่ระบบอาจารย์คลิกที่นี่</a></small>
+                </div>
             </div>
         </div>
     </div>
 
-    {% elif page == 'student' %}
+    {% elif page == 'student_exam' %}
     <!-- 📝 หน้าทำข้อสอบนักเรียน -->
     <div class="row justify-content-center">
         <div class="col-md-8">
@@ -92,7 +91,7 @@ PAGE_TEMPLATE = """
             <div id="exam-screen" class="card card-custom p-4 bg-white d-none">
                 <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
                     <h4 class="fw-bold m-0">ข้อสอบวิชาแคลคูลัส (5 ข้อ)</h4>
-                    <span class="badge bg-info text-dark fs-6">ผู้สอบ: {{ session['username'] }}</span>
+                    <span class="badge bg-info text-dark fs-6">ผู้สอบ: {{ session['student_username'] }}</span>
                 </div>
                 <form id="exam-form">
                     <div id="questions-container"></div>
@@ -189,25 +188,63 @@ PAGE_TEMPLATE = """
         }
     </script>
 
-    {% elif page == 'teacher' %}
-    <!-- 👨‍🏫 หน้าอาจารย์ (TEACHER DASHBOARD) -->
+    {% elif page == 'teacher_login' %}
+    <!-- 👨‍🏫 หน้า LOGIN สำหรับอาจารย์ (/teacher) -->
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card card-custom p-4 bg-white border-danger border-top border-5">
+                <div class="text-center mb-3">
+                    <span class="badge bg-danger px-3 py-2 mb-2 fs-6">👨‍🏫 สำหรับอาจารย์ / ผู้ดูแลระบบ</span>
+                    <h3 class="fw-bold text-dark">เข้าสู่ระบบ Dashboard อาจารย์</h3>
+                    <p class="text-muted">ตรวจสอบผลการสอบและคำตอบของนักเรียน</p>
+                </div>
+                {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+                <form method="POST" action="/teacher">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">รหัสผ่านอาจารย์ (Room Code)</label>
+                        <input type="password" name="room_code" class="form-control" required placeholder="กรอกรหัส 1234">
+                    </div>
+                    <button type="submit" class="btn btn-danger w-100 py-2 fw-bold fs-5">เข้าสู่ระบบอาจารย์</button>
+                </form>
+                <div class="text-center mt-3 border-top pt-3">
+                    <small class="text-muted">ต้องการทำข้อสอบฝั่งนักเรียน? <a href="/student" class="fw-bold text-decoration-none">ไปหน้านักเรียนคลิกที่นี่</a></small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% elif page == 'teacher_dashboard' %}
+    <!-- 👨‍🏫 หน้า DASHBOARD อาจารย์ -->
     <div class="row justify-content-center">
         <div class="col-md-10">
             <div class="card card-custom p-4 bg-white">
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h3 class="fw-bold text-primary">ระบบจัดการและดูผลสอบ (สำหรับอาจารย์)</h3>
-                    <a href="/logout" class="btn btn-outline-danger btn-sm">ออกจากระบบ</a>
+                <div class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3">
+                    <div>
+                        <span class="badge bg-danger mb-1 fs-6">👨‍🏫 Teacher Mode</span>
+                        <h3 class="fw-bold text-dark m-0">กระดานสรุปผลและตรวจคำตอบนักเรียน</h3>
+                    </div>
+                    <div>
+                        <a href="/logout" class="btn btn-outline-danger btn-sm">ออกจากระบบ</a>
+                    </div>
                 </div>
-                <h5 class="mb-3">ประวัติการส่งข้อสอบและคำตอบของนักเรียน</h5>
+
+                <div class="alert alert-info d-flex justify-content-between align-items-center mb-4">
+                    <div>
+                        <b>🔗 ลิงก์สำหรับให้นักเรียนเข้าสอบ:</b> <code id="student-url">https://six705179-problem3-1.onrender.com/student</code>
+                    </div>
+                    <button class="btn btn-sm btn-info text-white" onclick="navigator.clipboard.writeText(document.getElementById('student-url').innerText); alert('คัดลอกลิงก์ให้นักเรียนเรียบร้อย!');">คัดลอกลิงก์นักเรียน</button>
+                </div>
+
+                <h5 class="mb-3 fw-bold">รายชื่อและประวัติการส่งข้อสอบของนักเรียน</h5>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle">
-                        <thead class="table-light">
+                        <thead class="table-dark">
                             <tr>
                                 <th>#</th>
-                                <th>ชื่อ-รหัสนักศึกษา</th>
-                                <th>คะแนน</th>
+                                <th>ชื่อ - รหัสนักศึกษา</th>
+                                <th>คะแนนรวม</th>
                                 <th>เวลาที่ส่ง</th>
-                                <th>รายละเอียดคำตอบ</th>
+                                <th>การตรวจคำตอบ</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -215,33 +252,35 @@ PAGE_TEMPLATE = """
                             <tr>
                                 <td>{{ loop.index }}</td>
                                 <td><b>{{ res.username }}</b></td>
-                                <td><span class="badge bg-success fs-6">{{ res.score }} / 5</span></td>
+                                <td><span class="badge bg-success fs-6">{{ res.score }} / 5 ข้อ</span></td>
                                 <td>{{ res.timestamp }}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ loop.index }}">
-                                        🔍 ตรวจคำตอบนักเรียน
+                                    <button class="btn btn-sm btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ loop.index }}">
+                                        🔍 ดูคำตอบอย่างละเอียด
                                     </button>
                                 </td>
                             </tr>
                             <tr class="collapse" id="collapse-{{ loop.index }}">
                                 <td colspan="5" class="bg-light p-3">
                                     <div class="card card-body">
-                                        <h6 class="fw-bold text-primary mb-3">คำตอบของ {{ res.username }}:</h6>
+                                        <h6 class="fw-bold text-primary mb-3">รายละเอียดคำตอบของ {{ res.username }}:</h6>
                                         {% for detail in res.details %}
-                                        <div class="mb-2 pb-2 border-bottom">
-                                            <p class="m-0"><b>ข้อ {{ loop.index }}:</b> {{ detail.question }}</p>
-                                            <p class="m-0 text-secondary">คำตอบนักเรียน: <span class="badge bg-secondary">{{ detail.student_answer or 'ไม่ได้ตอบ' }}</span></p>
-                                            <p class="m-0 {{ 'text-success' if detail.is_correct else 'text-danger' }}">
-                                                <b>ผลตรวจ:</b> {{ 'ถูกต้อง (+1)' if detail.is_correct else 'ไม่ถูกต้อง (0)' }}
+                                        <div class="mb-3 pb-2 border-bottom">
+                                            <p class="m-0 fw-bold">ข้อ {{ loop.index }}: {{ detail.question }}</p>
+                                            <p class="m-0 my-1">
+                                                คำตอบนักเรียน: <span class="badge bg-secondary fs-6">{{ detail.student_answer or 'ไม่ได้ตอบ' }}</span>
                                             </p>
-                                            <small class="text-muted">{{ detail.explanation }}</small>
+                                            <p class="m-0 {{ 'text-success fw-bold' if detail.is_correct else 'text-danger fw-bold' }}">
+                                                ผลการตรวจ: {{ '✅ ถูกต้อง (+1 คะแนน)' if detail.is_correct else '❌ ไม่ถูกต้อง (0 คะแนน)' }}
+                                            </p>
+                                            <small class="text-muted d-block mt-1">📌 {{ detail.explanation }}</small>
                                         </div>
                                         {% endfor %}
                                     </div>
                                 </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="5" class="text-center text-muted py-4">ยังไม่มีข้อมูลการส่งข้อสอบในเซสชันนี้</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-4">ยังไม่มีข้อมูลนักเรียนทำข้อสอบในระบบขณะนี้</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -250,50 +289,55 @@ PAGE_TEMPLATE = """
         </div>
     </div>
     {% endif %}
+
 </div>
+<script>
+    if (window.MathJax) {
+        MathJax.typesetPromise();
+    }
+</script>
 </body>
 </html>
 """
 
 # ==========================================
-# 🚀 FLASK ROUTES
+# 🚀 FLASK ROUTES & LOGIC
 # ==========================================
 
 @app.route('/')
 def index():
-    if 'username' in session:
-        if session.get('role') == 'teacher':
-            return redirect(url_for('teacher_dashboard'))
-        return redirect(url_for('student_exam'))
-    return render_template_string(PAGE_TEMPLATE, page='login')
+    return redirect(url_for('student_page'))
 
-@app.route('/login', methods=['POST'])
-def login():
-    username = request.form.get('username')
-    role = request.form.get('role')
-    room_code = request.form.get('room_code')
+@app.route('/student', methods=['GET', 'POST'])
+def student_page():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        room_code = request.form.get('room_code')
 
-    if room_code != ROOM_CODE:
-        return render_template_string(PAGE_TEMPLATE, page='login', error='รหัสห้องสอบ (Room Code) ไม่ถูกต้อง!')
+        if room_code != ROOM_CODE:
+            return render_template_string(PAGE_TEMPLATE, page='student_login', error='รหัสเข้าห้องสอบ (Room Code) ไม่ถูกต้อง!')
 
-    session['username'] = username
-    session['role'] = role
+        session['student_username'] = username
+        return redirect(url_for('student_page'))
 
-    if role == 'teacher':
-        return redirect(url_for('teacher_dashboard'))
-    return redirect(url_for('student_exam'))
+    if 'student_username' in session:
+        return render_template_string(PAGE_TEMPLATE, page='student_exam')
+    return render_template_string(PAGE_TEMPLATE, page='student_login')
 
-@app.route('/student')
-def student_exam():
-    if 'username' not in session or session.get('role') != 'student':
-        return redirect(url_for('index'))
-    return render_template_string(PAGE_TEMPLATE, page='student')
+@app.route('/teacher', methods=['GET', 'POST'])
+def teacher_page():
+    if request.method == 'POST':
+        room_code = request.form.get('room_code')
 
-@app.route('/teacher')
-def teacher_dashboard():
-    if 'username' not in session or session.get('role') != 'teacher':
-        return redirect(url_for('index'))
-    return render_template_string(PAGE_TEMPLATE, page='teacher', results=EXAM_RESULTS)
+        if room_code != ROOM_CODE:
+            return render_template_string(PAGE_TEMPLATE, page='teacher_login', error='รหัสผ่านอาจารย์ (Room Code) ไม่ถูกต้อง!')
+
+        session['is_teacher'] = True
+        return redirect(url_for('teacher_page'))
+
+    if session.get('is_teacher'):
+        return render_template_string(PAGE_TEMPLATE, page='teacher_dashboard', results=EXAM_RESULTS)
+    return render_template_string(PAGE_TEMPLATE, page='teacher_login')
 
 @app.route('/api/generate_exam', methods=['POST'])
 def generate_exam():
@@ -343,20 +387,28 @@ def submit_exam():
     details = []
 
     for i, item in enumerate(answers):
-        student_ans = item.get('student_answer', '').strip()
-        correct_ans = exam_data[i].get('answer', '') if i < len(exam_data) else ""
+        student_ans = (item.get('student_answer') or '').strip()
+        correct_ans = (exam_data[i].get('answer') or '').strip() if i < len(exam_data) else ""
         
-        # 1. เปรียบเทียบแบบตัดช่องว่าง
+        # เปรียบเทียบแบบตัดช่องว่าง (Exact Match)
         clean_student = student_ans.replace(" ", "").lower()
         clean_correct = correct_ans.replace(" ", "").lower()
         
-        is_correct = (clean_student == clean_correct) or (clean_student in clean_correct and len(clean_student) > 0)
+        # ป้องกันการพิมพ์ตัวแปรเดี่ยวๆ เช่น x
+        is_correct = (clean_student == clean_correct) and len(clean_student) > 0
         explanation = f"เฉลยที่ถูกต้องคือ: {correct_ans}"
 
-        # 2. ให้ Gemma AI ช่วยตรวจความเทียบเท่าทางคณิตศาสตร์
-        if not is_correct and client and student_ans:
+        # หากไม่ตรง ให้ Gemma AI ตรวจสอบความเท่ากันทางคณิตศาสตร์
+        if not is_correct and client and student_ans and student_ans != "-":
             try:
-                eval_prompt = f"โจทย์: {item.get('question')}\nเฉลย: {correct_ans}\nคำตอบนักเรียน: {student_ans}\nคำตอบนักเรียนถูกต้องและเทียบเท่าทางคณิตศาสตร์กับเฉลยหรือไม่? ตอบเป็น JSON: {{\"is_correct\": true/false, \"explanation\": \"คำอธิบาย\"}}"
+                eval_prompt = f"""
+                โจทย์: {item.get('question')}
+                เฉลยที่ถูกต้อง: {correct_ans}
+                คำตอบของนักเรียน: {student_ans}
+
+                คำตอบของนักเรียนถูกต้องทางคณิตศาสตร์หรือไม่? (หากตอบสั้นผิดรูปหรือตอบตัวแปรเดี่ยวๆ เช่น x โดยไม่ตรงกับเฉลย ให้ถือว่าไม่ถูกต้อง)
+                ตอบกลับเป็น JSON เท่านั้น: {{"is_correct": true/false, "explanation": "คำอธิบายภาษาไทย"}}
+                """
                 eval_resp = client.models.generate_content(
                     model='gemma-2-27b-it',
                     contents=eval_prompt,
@@ -379,9 +431,10 @@ def submit_exam():
             "explanation": explanation
         })
 
-    # บันทึกคะแนนและคำตอบเข้าสู่กระดานอาจารย์
+    # บันทึกคะแนนเข้าตารางอาจารย์
+    student_name = session.get('student_username', 'นักเรียน')
     EXAM_RESULTS.append({
-        "username": session.get('username', 'ไม่ระบุชื่อ'),
+        "username": student_name,
         "score": score,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "details": details
